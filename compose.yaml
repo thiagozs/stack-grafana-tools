@@ -1,0 +1,154 @@
+services:
+  portainer:
+    image: portainer/portainer-ce:2.32.0
+    container_name: portainer
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+      - config_shared:/config-shared
+    ports:
+      - "9000:9000"
+    networks:
+      - o11yotel
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+      - "--web.external-url=http://localhost:9090"
+      - "--storage.tsdb.retention.time=15d" # Keeping 15d as a safe default, scrape interval controls granularity
+    volumes:
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./prometheus/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - prometheus_data:/prometheus
+      - config_shared:/config-shared:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - o11yotel
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.29.0
+    container_name: alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/config.yaml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./alertmanager/config.yaml:/etc/alertmanager/config.yaml:ro
+      - alertmanager_data:/alertmanager
+      - config_shared:/config-shared:ro
+    ports:
+      - "9093:9093"
+    networks:
+      - o11yotel
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.139.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+      - config_shared:/config-shared:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8081:8081" # Faro
+      - "8889:8889" # Prometheus exporter metrics
+    networks:
+      - o11yotel
+    depends_on:
+      - loki
+      - tempo
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.2.0
+    container_name: loki
+    user: root
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+      - config_shared:/config-shared:ro
+    networks:
+      - o11yotel
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.9.0
+    container_name: tempo
+    command: ["-config.file=/etc/tempo/tempo-config.yaml"]
+    volumes:
+      - ./tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+      - tempo_data:/var/tempo
+      - config_shared:/config-shared:ro
+    networks:
+      - o11yotel
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.6.1
+    container_name: promtail
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - ./promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - config_shared:/config-shared:ro
+    networks:
+      - o11yotel
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.2.1
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+      - config_shared:/config-shared:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - o11yotel
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.10.2
+    container_name: node-exporter
+    command:
+      - "--path.rootfs=/host"
+    pid: host
+    restart: unless-stopped
+    volumes:
+      - "/:/host:ro,rslave"
+    networks:
+      - o11yotel
+
+networks:
+  o11yotel:
+    driver: bridge
+
+volumes:
+  config_shared:
+  portainer_data:
+  prometheus_data:
+  loki_data:
+  tempo_data:
+  grafana_data:
+  alertmanager_data:
