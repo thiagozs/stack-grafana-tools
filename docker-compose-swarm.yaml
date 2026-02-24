@@ -1,0 +1,194 @@
+version: "3.9"
+
+services:
+  config-init:
+    image: alpine/git:2.47.2
+    environment:
+      - CONFIG_REPO_URL=https://github.com/thiagozs/stack-grafana-tools.git
+      - CONFIG_REPO_BRANCH=main
+      - CONFIG_REPO_SUBDIR=.
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        set -e;
+        rm -rf /config-shared/*;
+        git clone --depth 1 --branch "$CONFIG_REPO_BRANCH" "$CONFIG_REPO_URL" /tmp/configs;
+        cp -R "/tmp/configs/$CONFIG_REPO_SUBDIR"/. /config-shared/
+    volumes:
+      - config_shared:/config-shared
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: none
+
+  portainer:
+    image: portainer/portainer-ce:2.32.0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+      - config_shared:/config-shared
+    ports:
+      - "9000:9000"
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+      - "--web.external-url=http://localhost:9090"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - config_shared:/config-shared:ro
+      - /config-shared/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - /config-shared/prometheus/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  alertmanager:
+    image: prom/alertmanager:v0.29.0
+    command:
+      - "--config.file=/etc/alertmanager/config.yaml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - config_shared:/config-shared:ro
+      - /config-shared/alertmanager/config.yaml:/etc/alertmanager/config.yaml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.139.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - config_shared:/config-shared:ro
+      - /config-shared/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8081:8081"
+      - "8889:8889"
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  loki:
+    image: grafana/loki:3.2.0
+    user: root
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - loki_data:/loki
+      - config_shared:/config-shared:ro
+      - /config-shared/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  tempo:
+    image: grafana/tempo:2.9.0
+    command: ["-config.file=/etc/tempo/tempo-config.yaml"]
+    volumes:
+      - tempo_data:/var/tempo
+      - config_shared:/config-shared:ro
+      - /config-shared/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  promtail:
+    image: grafana/promtail:3.6.1
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - config_shared:/config-shared:ro
+      - /config-shared/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  grafana:
+    image: grafana/grafana:12.2.1
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - config_shared:/config-shared:ro
+      - /config-shared/grafana/provisioning:/etc/grafana/provisioning:ro
+      - /config-shared/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - grafana_net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  node-exporter:
+    image: prom/node-exporter:v1.10.2
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - "/:/host:ro,rslave"
+    networks:
+      - grafana_net
+    deploy:
+      mode: global
+      restart_policy:
+        condition: any
+
+networks:
+  grafana_net:
+    driver: overlay
+    attachable: true
+    name: grafana-stack-net
+
+volumes:
+  config_shared:
+  portainer_data:
+  prometheus_data:
+  loki_data:
+  tempo_data:
+  grafana_data:
+  alertmanager_data:
